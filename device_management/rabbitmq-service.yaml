@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    kompose.cmd: kompose convert -f docker-compose.yaml
+    kompose.version: 1.35.0 (9532ceef3)
+  labels:
+    io.kompose.service: rabbitmq
+  name: rabbitmq
+spec:
+  ports:
+    - name: "5673"
+      port: 5673
+      targetPort: 5672
+    - name: "15673"
+      port: 15673
+      targetPort: 15672
+  selector:
+    io.kompose.service: rabbitmq

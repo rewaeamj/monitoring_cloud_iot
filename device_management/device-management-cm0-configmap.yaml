@@ -1,0 +1,109 @@
+apiVersion: v1
+data:
+  Dockerfile: "FROM python:3.10-slim\n\nWORKDIR /app\n\n# Copier le fichier requirements.txt\nCOPY requirements.txt . \n\n# Installer les dépendances\nRUN pip install --no-cache-dir -r requirements.txt\n\n# Copier le code de l'application\nCOPY . .\n\n# Définir la variable d'environnement FLASK_APP\nENV FLASK_APP=app.py\n\n# Exposer le port utilisé par Flask\nEXPOSE 5000\n\n# Démarrer l'application Flask\nCMD [\"flask\", \"run\", \"--host=0.0.0.0\"]\n"
+  app.py: |
+    from flask import Flask
+    from flask_jwt_extended import JWTManager
+    from flask_cors import CORS
+    from config import Config
+    from controllers import device_bp
+    from business import DeviceBusiness
+    from flask import request
+    from models import db
+
+    app = Flask(__name__)
+    app.config.from_object(Config)
+    CORS(app, origins=["http://localhost:3000"])
+
+    db.init_app(app)
+
+    jwt = JWTManager(app)
+    @app.route('/')
+    def home():
+        return "Bienvenue sur l'application Device Management !"
+    app.register_blueprint(device_bp)
+
+    @app.route('/devices/search', methods=['GET'])
+    def search_devices():
+        query = request.args.get('q', '')
+        if query:
+            return DeviceBusiness.search_devices(query)
+        return jsonify({'devices': []})
+
+    if __name__ == '__main__':
+        app.run(debug=True, host='0.0.0.0')
+  business.py: "import json\nfrom dal import DeviceDAL\nfrom flask import jsonify\nimport pika\nfrom config import Config\n\nclass DeviceBusiness:\n    @staticmethod\n    def publish_event(event_data):\n        \"\"\"\n        Publishes an event to RabbitMQ.\n        \"\"\"\n        try:\n            # Vérification si event_data est bien un dictionnaire\n            if not isinstance(event_data, dict):\n                raise ValueError(\"Les donnees de l'événement doivent être un dictionnaire.\")\n\n            # Sérialisation des données en JSON\n            event_data_str = json.dumps(event_data)\n\n            # Connexion à RabbitMQ\n            parameters = pika.URLParameters(Config.RABBITMQ_URL)\n            connection = pika.BlockingConnection(parameters)\n            channel = connection.channel()\n            channel.queue_declare(queue='device_events', durable=True)\n            channel.basic_publish(\n                exchange='',\n                routing_key='device_events',\n                body=event_data_str,  # Publier la chaîne JSON\n                properties=pika.BasicProperties(delivery_mode=2)  # Assurez-vous que le message est persistant\n            )\n            connection.close()\n        except Exception as e:\n            # Retourner une erreur en cas de problème avec RabbitMQ ou les données\n            return jsonify({\"error\": f\"RabbitMQ Error: {str(e)}\"}), 500\n\n    @staticmethod\n    def list_devices():\n        try:\n            devices = DeviceDAL.get_all_devices()\n            print(f\"Devices fetched: {devices}\")  # Log de la liste des dispositifs\n            return jsonify({'devices': devices}), 200\n        except Exception as e:\n            print(f\"Error: {str(e)}\")\n            return jsonify({\"error\": f\"Erreur serveur: {str(e)}\"}), 500\n        \n    @staticmethod\n    def create_device(request):\n        data = request.get_json()\n        if not data.get('name'):\n            return jsonify({\"error\": \"Le nom est requis\"}), 400\n\n        device_id = DeviceDAL.insert_device(data)\n        if device_id:\n            event_data = {'event': 'device_created', 'device_id': device_id, 'name': data['name']}\n            print(\"Donnees de l'evenement:\", event_data)\n            DeviceBusiness.publish_event(event_data)\n            return jsonify({\"message\": \"Dispositif cree\", \"id\": device_id}), 201\n        return jsonify({\"error\": \"Erreur lors de la creation\"}), 500\n\n    @staticmethod\n    def update_device(device_id, request):\n        data = request.get_json()\n        if DeviceDAL.update_device(device_id, data):\n            event_data = {'event': 'device_updated', 'device_id': device_id}\n            DeviceBusiness.publish_event(event_data)\n            return jsonify({\"message\": \"Dispositif mis a jour\"}), 200\n        return jsonify({\"error\": \"Erreur lors de la mise a jour\"}), 500\n\n    @staticmethod\n    def delete_device(device_id):\n        if DeviceDAL.delete_device(device_id):\n            event_data = {'event': 'device_deleted', 'device_id': device_id}\n            DeviceBusiness.publish_event(event_data)\n            return jsonify({\"message\": \"Dispositif supprime\"}), 200\n        return jsonify({\"error\": \"Erreur lors de la suppression\"}), 500\n    @staticmethod\n    def search_devices(query):\n        try:\n            devices = DeviceDAL.search_devices(query)\n            # Retourne toujours un JSON avec la clé 'devices'\n            return jsonify({'devices': devices}), 200\n        except Exception as e:\n            print(f\"Erreur lors de la recherche: {str(e)}\")\n            return jsonify({\"error\": f\"Erreur lors de la recherche: {str(e)}\"}), 500\n"
+  config.py: |
+    import os
+
+    class Config:
+        SQLALCHEMY_DATABASE_URI = "postgresql://postgres:1234@localhost:5432/db_devices"
+        SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+        REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+
+        RABBITMQ_URL = os.getenv('RABBITMQ_URL', 'amqp://guest:guest@localhost/')
+  controllers.py: |
+    from flask import Blueprint, request, jsonify
+    from business import DeviceBusiness
+    from flask_jwt_extended import jwt_required
+
+    device_bp = Blueprint('device_bp', __name__)
+
+    @device_bp.route('/devices', methods=['GET', 'POST'])
+    #@jwt_required()
+    def manage_devices():
+        if request.method == 'GET':
+            return DeviceBusiness.list_devices()
+        elif request.method == 'POST':
+            return DeviceBusiness.create_device(request)
+
+    @device_bp.route('/devices/<int:device_id>', methods=['PUT', 'DELETE'])
+    #@jwt_required()
+    def device_detail(device_id):
+        if request.method == 'PUT':
+            return DeviceBusiness.update_device(device_id, request)
+        elif request.method == 'DELETE':
+            return DeviceBusiness.delete_device(device_id)
+    @device_bp.route('/devices/search', methods=['GET'])
+    def search_devices():
+        # Récupère le paramètre 'q' depuis la query string (exemple: /devices/search?q=imprimante)
+        query = request.args.get('q', '')
+        return DeviceBusiness.search_devices(query)
+  dal.py: "import psycopg2\nimport os\nimport json\nfrom models import Device\nfrom models import db\ndef get_db_connection():\n    try:\n        return psycopg2.connect(\n            database=os.getenv('DEVICE_DB', 'db_devices'),\n            user=os.getenv('DEVICE_DB_USER', 'postgres'),\n            password=os.getenv('DEVICE_DB_PASSWORD', '1234'),\n            host=os.getenv('DEVICE_DB_HOST', 'localhost'),\n            port=os.getenv('DEVICE_DB_PORT', '5432')\n        )\n    except Exception as e:\n        print(f\"Error connecting to the database: {e}\")\n        raise  \n\nclass DeviceDAL:\n    @staticmethod\n    def get_all_devices():\n        devices = []\n        try:\n            print(\"Connecting to the database...\")\n            conn = get_db_connection()\n            cur = conn.cursor()\n            \n            print(\"Executing query...\")\n            # On récupère uniquement id, name, description, status\n            cur.execute(\"SELECT id, name, description, status FROM devices\")\n            rows = cur.fetchall()\n            print(f\"Number of rows fetched: {len(rows)}\")\n            \n            for row in rows:\n                device = {\n                    'id': row[0],\n                    'name': row[1],\n                    'description': row[2] if row[2] else '',\n                    'status': row[3] if row[3] else 'inactive'\n                }\n                devices.append(device)\n            \n            cur.close()\n            conn.close()\n            return devices\n            \n        except Exception as e:\n            print(f\"Database error: {str(e)}\")\n            raise\n    @staticmethod\n    def insert_device(data):\n        conn = get_db_connection()\n        cur = conn.cursor()\n        cur.execute(\n            \"INSERT INTO devices (name, description, status ) VALUES (%s, %s, %s) RETURNING id\",\n            (data['name'], data.get('description', ''), data.get('status', 'inactive'))\n        )\n        device_id = cur.fetchone()[0]\n        conn.commit()\n        conn.close()\n        return device_id\n\n    @staticmethod\n    def update_device(device_id, data):\n        conn = get_db_connection()\n        cur = conn.cursor()\n        cur.execute(\n            \"UPDATE devices SET name = %s, description = %s, status = %s  WHERE id = %s\",\n            (data.get('name'), data.get('description'), data.get('status'), device_id)\n        )\n        conn.commit()\n        conn.close()\n        return True\n\n    @staticmethod\n    def delete_device(device_id):\n        conn = get_db_connection()\n        cur = conn.cursor()\n        cur.execute(\"DELETE FROM devices WHERE id = %s\", (device_id,))\n        conn.commit()\n        conn.close()\n        return True\n    \n\n    @staticmethod\n    def search_devices(query):\n        devices = []\n        try:\n            conn = get_db_connection()\n            cur = conn.cursor()\n            search_pattern = f\"%{query}%\"\n            cur.execute(\"\"\"\n                SELECT id, name, description, status \n                FROM devices \n                WHERE name ILIKE %s OR description ILIKE %s\n            \"\"\", (search_pattern, search_pattern))\n            rows = cur.fetchall()\n            \n            for row in rows:\n                device = {\n                    'id': row[0],\n                    'name': row[1],\n                    'description': row[2] if row[2] else '',\n                    'status': row[3] if row[3] else 'inactive'\n                }\n                devices.append(device)\n            \n            cur.close()\n            conn.close()\n            return devices\n        except Exception as e:\n            print(f\"Database error: {str(e)}\")\n            raise"
+  docker-compose.yaml: |
+    services:
+      device_management:
+        build: .
+        ports:
+          - "8080:5001"
+        environment:
+          - DATABASE_URI=postgresql://username:password@db/db_devices
+          - RABBITMQ_URL=amqp://guest:guest@rabbitmq/
+        depends_on:
+          - db
+          - rabbitmq
+        volumes:
+          - .:/app
+
+      db:
+        image: postgres:13
+        environment:
+          POSTGRES_USER: admin
+          POSTGRES_PASSWORD: 1234
+          POSTGRES_DB: db_devices
+        ports:
+          - "5433:5432"
+
+      rabbitmq:
+        image: rabbitmq:3-management
+        ports:
+          - "5673:5672"
+          - "15673:15672"
+  models.py: "from flask_sqlalchemy import SQLAlchemy\n\ndb = SQLAlchemy()\n\nclass Device(db.Model):\n    __tablename__ = 'devices'\n    \n    id = db.Column(db.Integer, primary_key=True)\n    name = db.Column(db.String(100), nullable=False)\n    description = db.Column(db.String(255))\n    status = db.Column(db.String(50), nullable=False, default='inactive')\n"
+  requirements.txt: ""
+kind: ConfigMap
+metadata:
+  labels:
+    io.kompose.service: device-management
+  name: device-management-cm0

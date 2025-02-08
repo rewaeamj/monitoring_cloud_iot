@@ -1,0 +1,28 @@
+services:
+  device_management:
+    build: .
+    ports:
+      - "8080:5001"
+    environment:
+      - DATABASE_URI=postgresql://username:password@db/db_devices
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq/
+    depends_on:
+      - db
+      - rabbitmq
+    volumes:
+      - .:/app
+
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: db_devices
+    ports:
+      - "5433:5432"
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5673:5672"
+      - "15673:15672"

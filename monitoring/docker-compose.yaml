@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - monitoring_network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"   # RabbitMQ default port
+      - "15672:15672" # Management interface
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    networks:
+      - monitoring_network
+
+  monitoring_backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.monitoring
+    ports:
+      - "5002:5002"
+    depends_on:
+      - mongodb
+      - rabbitmq
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/
+      - RABBITMQ_HOST=rabbitmq
+    networks:
+      - monitoring_network
+
+  device_simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulator
+    depends_on:
+      - rabbitmq
+      - monitoring_backend
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+    networks:
+      - monitoring_network
+
+networks:
+  monitoring_network:
+    driver: bridge
+
+volumes:
+  mongodb_data: 

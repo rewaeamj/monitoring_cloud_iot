@@ -1,0 +1,10 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+COPY requirements.monitoring.txt requirements.txt
+RUN pip install -r requirements.txt
+
+COPY monitoring/device_simulator.py .
+
+CMD ["python", "device_simulator.py"] 

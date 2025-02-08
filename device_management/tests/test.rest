@@ -1,0 +1,3 @@
+curl -X POST http://localhost:5000/devices \
+     -H "Content-Type: application/json" \
+     -d '{"name": "Capteur Température", "description": "Capteur dans le salon", "configuration": {"interval": 30}, "status": "active"}'
